@@ -99,3 +99,5 @@ InitTestScene*.unity*
 /[Aa]ssets/[Ii]nit[Tt]est[Ss]cene*.unity*
 
 /[Aa]ssets/StreamingAssets/envs/streamdiffusion/Lib/
+/[Aa]ssets/StreamingAssets/models/
+/[Aa]ssets/StreamingAssets/exe/
