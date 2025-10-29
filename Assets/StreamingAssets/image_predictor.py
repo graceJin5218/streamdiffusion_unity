@@ -191,16 +191,33 @@ class Pipeline:
                  use_vae: bool, use_lora: bool, gc_mode: Literal["img2img", "txt2img"], acc_mode: str,
                  positive_prompt: str, negative_prompt: str = "", preloaded_pipe=None, model_path=None, lora_dict=None,
                  cfg_type: str = "none", delta: float = 0.1, do_add_noise: bool = True, enable_similar_image_filter: bool = True,
-                 similar_image_filter_threshold: float = 0.2, similar_image_filter_max_skip_frame: int = 10):
+                 similar_image_filter_threshold: float = 0.2, similar_image_filter_max_skip_frame: int = 10,
+                 initial_guidance_scale: Optional[float] = None, user_strength: Optional[float] = None,
+                 user_guidance_scale: Optional[float] = None, user_delta: Optional[float] = None):
         
         actual_model_path = model_path if model_path else base_model
         print(f"Initializing pipeline with model path: {actual_model_path}")
         
-        self.delta = delta
+        self.delta = float(delta)
         self.cfg_type = cfg_type
-        self.guidance_scale = 7.0
+        self.guidance_scale = float(initial_guidance_scale if initial_guidance_scale is not None else 7.0)
 
-        self.strength = float(default_strength)
+        #self.strength = float(default_strength)
+
+        base_strength = default_strength if default_strength is not None else 9.0
+        self.strength = float(base_strength)
+
+        self.user_strength = float(user_strength) if user_strength is not None else None
+        if self.user_strength is not None:
+            self.strength = float(self.user_strength)
+
+        self.user_guidance_scale = float(user_guidance_scale) if user_guidance_scale is not None else None
+        if self.user_guidance_scale is not None:
+            self.guidance_scale = float(self.user_guidance_scale)
+
+        self.user_delta = float(user_delta) if user_delta is not None else None
+        if self.user_delta is not None:
+            self.delta = float(self.user_delta)
         
         self.do_add_noise = do_add_noise
         self.enable_similar_image_filter = enable_similar_image_filter
@@ -321,6 +338,72 @@ class Pipeline:
                 output_type="pil"
             )
     
+    def _apply_runtime_parameters(self, guidance_scale_value: float, delta_value: float, strength_value: Optional[float]):
+        try:
+            self.guidance_scale = float(guidance_scale_value)
+            self.delta = float(delta_value)
+            if strength_value is not None:
+                self.strength = float(strength_value)
+
+            if hasattr(self, "stream") and hasattr(self.stream, "stream"):
+                inner_stream = self.stream.stream
+                if hasattr(inner_stream, "guidance_scale"):
+                    inner_stream.guidance_scale = float(guidance_scale_value)
+                if hasattr(inner_stream, "delta"):
+                    inner_stream.delta = float(delta_value)
+                if strength_value is not None and hasattr(inner_stream, "strength"):
+                    inner_stream.strength = float(strength_value)
+        except Exception as e:
+            if DEBUG:
+                print(f"Failed to apply runtime parameters: {e}")
+
+    def update_user_params(self, strength: Optional[float] = None, delta: Optional[float] = None,
+                           guidance_scale: Optional[float] = None):
+        updated = False
+
+        if strength is not None:
+            try:
+                strength_val = float(strength)
+                self.user_strength = strength_val
+                self.strength = strength_val
+                updated = True
+            except (TypeError, ValueError):
+                if DEBUG:
+                    print(f"Invalid strength override: {strength}")
+
+        if delta is not None:
+            try:
+                delta_val = float(delta)
+                if delta_val > 0:
+                    self.user_delta = delta_val
+                    self.delta = delta_val
+                    updated = True
+            except (TypeError, ValueError):
+                if DEBUG:
+                    print(f"Invalid delta override: {delta}")
+
+        if guidance_scale is not None:
+            try:
+                guidance_val = float(guidance_scale)
+                if guidance_val > 0:
+                    self.user_guidance_scale = guidance_val
+                    self.guidance_scale = guidance_val
+                    updated = True
+            except (TypeError, ValueError):
+                if DEBUG:
+                    print(f"Invalid guidance override: {guidance_scale}")
+
+        if updated:
+            self._last_detail_bucket = None
+            try:
+                effective_strength = self.user_strength if self.user_strength is not None else self.strength
+                effective_delta = self.user_delta if self.user_delta is not None else self.delta
+                effective_guidance = self.user_guidance_scale if self.user_guidance_scale is not None else self.guidance_scale
+                self._apply_runtime_parameters(effective_guidance, effective_delta, effective_strength)
+            except Exception as e:
+                if DEBUG:
+                    print(f"Runtime parameter sync failed: {e}")
+
 
     def _structure_score_from_lines(self, line_mask: np.ndarray) -> float:
         """
@@ -407,14 +490,29 @@ class Pipeline:
     def prepare(self, prompt, negative_prompt, target_guidance_scale=None):
         try:
             print(f"prompt: '{prompt}', negative prompt: '{negative_prompt}'")
-            delta_value = self.delta if hasattr(self, 'delta') else 0.8
-            strength_value = 9.0
+            # delta_value = self.delta if hasattr(self, 'delta') else 0.8
+            # strength_value = 9.0
             
-            global default_strength
-            if default_strength is not None:
-                strength_value = default_strength
+            # global default_strength
+            # if default_strength is not None:
+            #     strength_value = default_strength
             
-            guidance_scale_value = target_guidance_scale if target_guidance_scale is not None else self.guidance_scale
+            # guidance_scale_value = target_guidance_scale if target_guidance_scale is not None else self.guidance_scale
+
+            delta_value = self.user_delta if self.user_delta is not None else (self.delta if hasattr(self, 'delta') else 0.8)
+
+            strength_value = None
+            if self.user_strength is not None:
+                strength_value = self.user_strength
+            elif hasattr(self, 'strength') and self.strength is not None:
+                strength_value = self.strength
+            else:
+                global default_strength
+                strength_value = default_strength if default_strength is not None else 9.0
+
+            guidance_scale_value = target_guidance_scale if target_guidance_scale is not None else (
+                self.user_guidance_scale if self.user_guidance_scale is not None else self.guidance_scale
+            )
             
             print(f"사용參數: 引导규模={guidance_scale_value}, delta={delta_value}, strength={strength_value}")
             
@@ -426,6 +524,12 @@ class Pipeline:
                 'num_inference_steps': 18
             }
             self.stream.prepare(**prepare_params)
+
+            try:
+                self._apply_runtime_parameters(guidance_scale_value, delta_value, strength_value)
+            except Exception as sync_err:
+                if DEBUG:
+                    print(f"Failed to sync runtime parameters: {sync_err}")
 
             # 기존 옵션 유지
             if hasattr(self.stream, 'stream'):
@@ -452,6 +556,7 @@ class Pipeline:
         """
         m = (line_mask > 0.25).astype(np.uint8)  # 선=1, 배경=0
         H, W = m.shape[:2]
+
         if m.sum() < 8:
             return 0.0, 0.0
 
@@ -649,6 +754,13 @@ class Pipeline:
             # 3) strength(denoise): 그릴수록 ↑ → 입력(내 선)에 덜 고정
             target_strength = float(self._strength_min + creative * (self._strength_max - self._strength_min))
 
+            if self.user_guidance_scale is not None:
+                target_guid = float(self.user_guidance_scale)
+            if self.user_delta is not None:
+                target_delta = float(self.user_delta)
+            if self.user_strength is not None:
+                target_strength = float(self.user_strength)
+
 
             # 선이 어느 정도 있으면 너무 낮게 떨어지지 않도록 하한만 살짝 보정
             if drawn_px >= int(getattr(self, "_trigger_px", 4)):
@@ -669,6 +781,11 @@ class Pipeline:
                         strength=target_strength,
                         num_inference_steps=target_steps
                     )
+                    try:
+                        self._apply_runtime_parameters(target_guid, target_delta, target_strength)
+                    except Exception as sync_err:
+                        if DEBUG:
+                            print(f"[detail] parameter sync failed: {sync_err}")
                     self._last_detail_bucket = bucket
                     if DEBUG:
                         print(f"[detail] d={d:.2f} (area={d_area:.2f}, struct={d_struct:.2f}) "
@@ -758,11 +875,11 @@ def setModelPaths(base_m: str, tiny_vae_m: str, lcm_lora_m: str, lcm_lora_m2: st
 def loadPipeline(w: int, h: int, seed: int, use_vae: bool, use_lora: bool,
                  acc_mode: str, positive_prompt: str, negative_prompt: str, strength: float = None, 
                  lora_scale: float = None, lora_scale2: float = None,
-                 delta: float = 0.1, do_add_noise: bool = True,
+                 delta: Optional[float] = None, do_add_noise: bool = True,
                  enable_similar_image_filter: bool = True,
                  similar_image_filter_threshold: float = 0.2,
                  similar_image_filter_max_skip_frame: int = 1,
-                 guidance_scale: float = 1.0):
+                 guidance_scale: Optional[float] = None):
     
     global default_strength, default_lora_scale, default_lora_scale2, pipeline_object
     
@@ -773,11 +890,21 @@ def loadPipeline(w: int, h: int, seed: int, use_vae: bool, use_lora: bool,
     if not os.path.exists(base_model):
         print(f"错误: 基础模型文件不存在: {base_model}")
         return False
+    
+    provided_strength = strength
+    provided_delta = delta
+    provided_guidance = guidance_scale
         
     if strength is None:
         strength = default_strength
     else:
         default_strength = strength
+
+    if delta is None:
+        delta = 0.1
+
+    if guidance_scale is None:
+        guidance_scale = 7.0
     
     if lora_scale is None:
         lora_scale = default_lora_scale
@@ -830,7 +957,11 @@ def loadPipeline(w: int, h: int, seed: int, use_vae: bool, use_lora: bool,
             do_add_noise=do_add_noise,
             enable_similar_image_filter=enable_similar_image_filter,
             similar_image_filter_threshold=similar_image_filter_threshold,
-            similar_image_filter_max_skip_frame=similar_image_filter_max_skip_frame
+            similar_image_filter_max_skip_frame=similar_image_filter_max_skip_frame,
+            initial_guidance_scale=guidance_scale,
+            user_strength=provided_strength,
+            user_guidance_scale=provided_guidance,
+            user_delta=provided_delta
         )
 
         try:
@@ -1001,12 +1132,12 @@ def processData(client_socket, data):
         strength = None
         lora_scale = None
         lora_scale2 = None
-        delta = 0.1
+        delta = None
         do_add_noise = True
         enable_similar_image_filter = True
         similar_image_filter_threshold = 0.2
         similar_image_filter_max_skip_frame = 4
-        guidance_scale = 7.0
+        guidance_scale = None
         command_state = 0
         command = ""
         acc_mode = "tensorrt"
@@ -1188,6 +1319,8 @@ def processData(client_socket, data):
                     strength = strength_value
                     global default_strength
                     default_strength = strength_value
+                    if pipeline_object is not None:
+                        pipeline_object.update_user_params(strength=strength_value)
                     if DEBUG:
                         print(f"Setting strength to: {strength}")
                 except ValueError:
@@ -1315,8 +1448,10 @@ def processData(client_socket, data):
             elif key == "delta":
                 try:
                     delta_value = float(value)
-                    if 0 < delta_value <= 1.0:
+                    if delta_value > 0:
                         delta = delta_value
+                        if pipeline_object is not None:
+                            pipeline_object.update_user_params(delta=delta_value)
                         if DEBUG:
                             print(f"设置Delta为: {delta}")
                 except ValueError:
@@ -1358,6 +1493,8 @@ def processData(client_socket, data):
                     guidance_scale_value = float(value)
                     if guidance_scale_value > 0:
                         guidance_scale = guidance_scale_value
+                        if pipeline_object is not None:
+                            pipeline_object.update_user_params(guidance_scale=guidance_scale_value)
                         if DEBUG:
                             print(f"guidance_scale: {guidance_scale}")
                 except ValueError:
@@ -1417,8 +1554,12 @@ def processData(client_socket, data):
                 print(f"WARNING: Invalid LoRA scale value: {lora_scale}, resetting to default 0.85")
             lora_scale = 0.85
 
-        if DEBUG:    
-            print(f"Final parameters: Width={width}, Height={height}, Seed={seed}, Strength={strength}, LoRA Scale={lora_scale}")
+        if DEBUG:
+            effective_strength = strength if strength is not None else default_strength
+            effective_delta = delta if delta is not None else 0.1
+            effective_guidance = guidance_scale if guidance_scale is not None else 7.0
+            print(f"Final parameters: Width={width}, Height={height}, Seed={seed}, Strength={effective_strength}, "
+                  f"Delta={effective_delta}, Guidance={effective_guidance}, LoRA Scale={lora_scale}")
             
     except Exception as e:
         print(f"Error processing command: {e}")
