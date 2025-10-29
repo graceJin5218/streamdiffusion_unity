@@ -1,7 +1,7 @@
 import sys, os, io, socket, torch
 from pydantic import BaseModel, Field
 from PIL import Image
-from typing import Literal, Optional
+from typing import Literal, Optional, Tuple
 import numpy as np
 import random
 import torchvision.transforms as T
@@ -278,6 +278,21 @@ class Pipeline:
         self._prev_drawn_px = 0              # 이전 프레임의 선 픽셀 수(변화 감지용)
         self._rearm_eps = 96                 # 선 픽셀 증가가 이 값 이상이면 '새 스트로크'로 간주
 
+
+        # === Idle(미그림) 상태에서의 미세 변조 파라미터 ===
+        self._idle_rng = np.random.default_rng()
+        self._idle_noise_a = None
+        self._idle_noise_b = None
+        self._idle_noise_mix = 0.0
+        self._idle_last_frame = None
+        self._idle_base_frame = None
+        self._idle_noise_strength = 0.055    # 0.03~0.08 권장 (값↑ = 변화↑)
+        self._idle_noise_speed = 0.075       # 0.04~0.12 권장 (값↑ = 전환 속도↑)
+        self._idle_temporal_smooth = 0.82    # 0.7~0.9 (값↑ = 더 부드럽게)
+        self._idle_flicker_strength = 0.012  # 전체 색 변조(값↑ = 깜빡임↑)
+        self._idle_base_lerp = 0.08          # 새 출력과의 반응 속도(값↑ = 빠르게 동기화)
+        self._idle_texture_mix = 0.18        # 블러-그레인 혼합 비율
+        self._idle_shift_strength = 0.45     # 노이즈 이동량(픽셀)
 
         # ================================================================
         
@@ -640,6 +655,88 @@ class Pipeline:
         out = np.clip(out, 0.0, 1.0)
         return Image.fromarray((out * 255.0).astype(np.uint8), "RGB")
 
+    def _render_idle_frame(self, base_image: Optional[Image.Image], line_mask: Optional[np.ndarray],
+                           size: Tuple[int, int]) -> Image.Image:
+        """캔버스에 그려진 선이 없을 때도 은은하게 변하는 그레인 프레임을 만든다."""
+        if getattr(self, "_idle_rng", None) is None:
+            self._idle_rng = np.random.default_rng()
+
+        width, height = size
+        shape = (height, width, 3)
+
+        if (getattr(self, "_idle_noise_a", None) is None or
+                getattr(self, "_idle_noise_a").shape != shape):
+            self._idle_noise_a = self._idle_rng.random(shape, dtype=np.float32)
+            self._idle_noise_b = self._idle_rng.random(shape, dtype=np.float32)
+            self._idle_noise_mix = 0.0
+            self._idle_last_frame = None
+
+        speed = float(getattr(self, "_idle_noise_speed", 0.075))
+        self._idle_noise_mix += speed
+        while self._idle_noise_mix >= 1.0:
+            self._idle_noise_a = self._idle_noise_b
+            self._idle_noise_b = self._idle_rng.random(shape, dtype=np.float32)
+            self._idle_noise_mix -= 1.0
+
+        mix = float(np.clip(self._idle_noise_mix, 0.0, 1.0))
+        noise = (1.0 - mix) * self._idle_noise_a + mix * self._idle_noise_b
+
+        shift_strength = float(getattr(self, "_idle_shift_strength", 0.45))
+        if shift_strength > 0.0:
+            shift_x = float(self._idle_rng.normal(0.0, shift_strength))
+            shift_y = float(self._idle_rng.normal(0.0, shift_strength))
+            if abs(shift_x) > 1e-3 or abs(shift_y) > 1e-3:
+                M = np.array([[1.0, 0.0, shift_x], [0.0, 1.0, shift_y]], dtype=np.float32)
+                noise = cv2.warpAffine(noise, M, (width, height), flags=cv2.INTER_LINEAR,
+                                       borderMode=cv2.BORDER_REFLECT)
+
+        strength = float(getattr(self, "_idle_noise_strength", 0.055))
+
+        if base_image is not None:
+            base_arr = np.asarray(base_image.convert("RGB"), dtype=np.float32) / 255.0
+        else:
+            base_rgb = np.array(getattr(self, "_ghost_bg_rgb", (10, 10, 10)), dtype=np.float32) / 255.0
+            base_arr = np.broadcast_to(base_rgb[None, None, :], shape).copy()
+
+        if getattr(self, "_idle_base_frame", None) is None or getattr(self, "_idle_base_frame").shape != base_arr.shape:
+            self._idle_base_frame = base_arr.copy()
+        else:
+            lerp = float(np.clip(getattr(self, "_idle_base_lerp", 0.08), 0.0, 1.0))
+            self._idle_base_frame = self._idle_base_frame * (1.0 - lerp) + base_arr * lerp
+
+        base = self._idle_base_frame
+
+        frame = base + (noise - 0.5) * strength
+
+        texture_mix = float(np.clip(getattr(self, "_idle_texture_mix", 0.18), 0.0, 1.0))
+        if texture_mix > 0.0:
+            try:
+                blurred = cv2.GaussianBlur(base, (0, 0), 1.2)
+            except Exception:
+                from scipy import ndimage
+                blurred = ndimage.gaussian_filter(base, sigma=1.2)
+            frame = frame * (1.0 - texture_mix) + blurred * texture_mix
+
+        if line_mask is not None:
+            mask = np.clip(line_mask.astype(np.float32), 0.0, 1.0)
+            mask = 1.0 - mask[..., None]
+            frame = frame * mask + base * (1.0 - mask)
+
+        flicker = float(getattr(self, "_idle_flicker_strength", 0.012))
+        if flicker > 0.0:
+            tint = self._idle_rng.normal(0.0, flicker, size=(1, 1, 3)).astype(np.float32)
+            frame += tint
+
+        frame = np.clip(frame, 0.0, 1.0)
+
+        prev = getattr(self, "_idle_last_frame", None)
+        smooth = float(np.clip(getattr(self, "_idle_temporal_smooth", 0.82), 0.0, 0.999))
+        if prev is not None and isinstance(prev, np.ndarray) and prev.shape == frame.shape:
+            frame = prev * smooth + frame * (1.0 - smooth)
+
+        self._idle_last_frame = frame
+        return Image.fromarray((frame * 255.0).astype(np.uint8), "RGB")
+
     
     def predict(self, input_image: Image.Image, new_prompt: Optional[str] = None, pattern_score: Optional[float] = None) -> Image.Image:
         try:
@@ -797,8 +894,11 @@ class Pipeline:
 
             # 완전 백지는 여전히 흰 화면 반환 (진짜 아무것도 안 그렸을 때만)
             if drawn_px < getattr(self, "_trigger_px", 4):
-                return Image.new("RGB", input_image.size, (255, 255, 255))
-            
+                #return Image.new("RGB", input_image.size, (255, 255, 255))
+                self._prev_drawn_px = drawn_px
+                reveal_frames = max(1, getattr(self, "_ghost_reveal_frames", 24))
+                self._ghost_reveal = min(1.0, self._ghost_reveal + (1.0 / reveal_frames))
+                return self._render_idle_frame(gen_pil, line_mask, input_image.size)
 
             
             # 0) 새 스트로크(그림 증가) 감지 시 페이드 리셋
@@ -807,6 +907,8 @@ class Pipeline:
                     # 새로 그리기 시작했다고 판단 → 처음엔 고스트 안 보이게
                     self._ghost_reveal = 0.0
                 self._prev_drawn_px = drawn_px
+                self._idle_last_frame = None
+                self._idle_base_frame = None
             else:
                 # 거의 백지면 점차 원래 상태로(리셋)
                 self._ghost_reveal = min(1.0, self._ghost_reveal + (1.0 / max(1, self._ghost_reveal_frames)))
