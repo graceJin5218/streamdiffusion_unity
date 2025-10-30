@@ -536,6 +536,7 @@ class Pipeline:
                 'negative_prompt': negative_prompt,
                 'guidance_scale': guidance_scale_value,
                 'delta': delta_value,
+                'strength': strength_value,
                 'num_inference_steps': 18
             }
             self.stream.prepare(**prepare_params)
