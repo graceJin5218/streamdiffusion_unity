@@ -286,13 +286,45 @@ class Pipeline:
         self._idle_noise_mix = 0.0
         self._idle_last_frame = None
         self._idle_base_frame = None
-        self._idle_noise_strength = 0.055    # 0.03~0.08 권장 (값↑ = 변화↑)
-        self._idle_noise_speed = 0.075       # 0.04~0.12 권장 (값↑ = 전환 속도↑)
-        self._idle_temporal_smooth = 0.82    # 0.7~0.9 (값↑ = 더 부드럽게)
-        self._idle_flicker_strength = 0.012  # 전체 색 변조(값↑ = 깜빡임↑)
-        self._idle_base_lerp = 0.08          # 새 출력과의 반응 속도(값↑ = 빠르게 동기화)
-        self._idle_texture_mix = 0.18        # 블러-그레인 혼합 비율
-        self._idle_shift_strength = 0.45     # 노이즈 이동량(픽셀)
+        # self._idle_noise_strength = 0.055    # 0.03~0.08 권장 (값↑ = 변화↑)
+        # self._idle_noise_speed = 0.075       # 0.04~0.12 권장 (값↑ = 전환 속도↑)
+        # self._idle_temporal_smooth = 0.82    # 0.7~0.9 (값↑ = 더 부드럽게)
+        # self._idle_flicker_strength = 0.012  # 전체 색 변조(값↑ = 깜빡임↑)
+        # self._idle_base_lerp = 0.08          # 새 출력과의 반응 속도(값↑ = 빠르게 동기화)
+        # self._idle_texture_mix = 0.18        # 블러-그레인 혼합 비율
+        # self._idle_shift_strength = 0.45     # 노이즈 이동량(픽셀)
+
+        self._idle_noise_strength = 0.11     # 0.06~0.18 권장 (값↑ = 변화↑)
+        self._idle_noise_speed = 0.12        # 0.06~0.2 권장 (값↑ = 전환 속도↑)
+        self._idle_temporal_smooth = 0.74    # 0.6~0.9 (값↑ = 더 부드럽게)
+        self._idle_flicker_strength = 0.028  # 전체 색 변조(값↑ = 깜빡임↑)
+        self._idle_base_lerp = 0.12          # 새 출력과의 반응 속도(값↑ = 빠르게 동기화)
+        self._idle_texture_mix = 0.16        # 블러-그레인 혼합 비율
+        self._idle_shift_strength = 1.05     # 노이즈 이동량(픽셀)
+        self._idle_wave_strength = 0.65      # 물결 왜곡(픽셀)
+        self._idle_wave_scale = 110.0        # 물결 주기(픽셀)
+        self._idle_wave_speed = 0.35         # 물결 이동 속도
+        self._idle_wave_frame_mix = 0.35     # 완성 프레임 왜곡 강도 비율
+        self._idle_wave_phase = 0.0
+        self._idle_wave_grid = None
+        self._idle_line_mix = 0.32           # 선 내부에도 idle 프레임 반영 비율
+        self._idle_line_soft = 0.85          # 선 마스크 부드럽게 펴 주는 가우시안 시그마
+        self._idle_line_noise = 0.045        # 선 영역 전용 추가 노이즈 세기
+        self._idle_line_expand = 1.65        # 선 마스크 확장 정도(σ)
+        self._idle_line_pulse = 0.06         # 선 영역 밝기 펄스 세기
+        self._idle_line_pulse_speed = 0.32   # 선 펄스 위상 속도
+        self._idle_line_pulse_freq = 15.0    # 선 펄스 주기(라인 밀도에 따른 가중)
+        self._idle_line_pulse_noise = 0.85   # 펄스 위상 잡음 세기
+        self._idle_line_phase = 0.0
+        self._idle_line_pulse_cache = None
+        self._idle_prev_line_mask = None
+        self._idle_inactive_frames = 0
+        self._idle_activation_frames = 6     # 이 프레임 이상 활동 없으면 idle 오버레이 활성화
+        self._idle_activity_eps = 0.0005     # 라인 마스크 평균 변화량 임계치
+        self._idle_activity_px = 24          # 변화 픽셀 수 임계치
+        self._idle_active_mix = 0.85         # idle 프레임과 결과 혼합 비율
+
+
 
         # ================================================================
         
@@ -352,7 +384,22 @@ class Pipeline:
                 dtype=torch_dtype,
                 output_type="pil"
             )
-    
+        # 유사 이미지 필터 설정을 스트림에 즉시 적용
+        try:
+            inner_stream = getattr(self.stream, "stream", None)
+            if inner_stream is not None and hasattr(inner_stream, "enable_similar_image_filter"):
+                if self.enable_similar_image_filter:
+                    inner_stream.enable_similar_image_filter(
+                        threshold=float(self.similar_image_filter_threshold),
+                        max_skip_frame=float(self.similar_image_filter_max_skip_frame)
+                    )
+                elif hasattr(inner_stream, "disable_similar_image_filter"):
+                    inner_stream.disable_similar_image_filter()
+        except Exception as filter_err:
+            if DEBUG:
+                print(f"Failed to configure similar image filter: {filter_err}")
+
+
     def _apply_runtime_parameters(self, guidance_scale_value: float, delta_value: float, strength_value: Optional[float]):
         try:
             self.guidance_scale = float(guidance_scale_value)
@@ -549,14 +596,26 @@ class Pipeline:
 
             # 기존 옵션 유지
             if hasattr(self.stream, 'stream'):
-                if hasattr(self.stream.stream, 'do_add_noise') and hasattr(self, 'do_add_noise'):
-                    self.stream.stream.do_add_noise = self.do_add_noise
-                if hasattr(self.stream.stream, 'enable_similar_image_filter') and hasattr(self, 'enable_similar_image_filter'):
-                    self.stream.stream.enable_similar_image_filter = self.enable_similar_image_filter
-                if hasattr(self.stream.stream, 'similar_image_filter_threshold') and hasattr(self, 'similar_image_filter_threshold'):
-                    self.stream.stream.similar_image_filter_threshold = self.similar_image_filter_threshold
-                if hasattr(self.stream.stream, 'similar_image_filter_max_skip_frame') and hasattr(self, 'similar_image_filter_max_skip_frame'):
-                    self.stream.stream.similar_image_filter_max_skip_frame = self.similar_image_filter_max_skip_frame
+                inner_stream = self.stream.stream
+                if hasattr(inner_stream, 'do_add_noise') and hasattr(self, 'do_add_noise'):
+                    inner_stream.do_add_noise = self.do_add_noise
+
+                if hasattr(inner_stream, 'enable_similar_image_filter'):
+                    if self.enable_similar_image_filter:
+                        inner_stream.enable_similar_image_filter(
+                            threshold=float(self.similar_image_filter_threshold),
+                            max_skip_frame=float(self.similar_image_filter_max_skip_frame)
+                        )
+                    elif hasattr(inner_stream, 'disable_similar_image_filter'):
+                        inner_stream.disable_similar_image_filter()
+                # if hasattr(self.stream.stream, 'do_add_noise') and hasattr(self, 'do_add_noise'):
+                #     self.stream.stream.do_add_noise = self.do_add_noise
+                # if hasattr(self.stream.stream, 'enable_similar_image_filter') and hasattr(self, 'enable_similar_image_filter'):
+                #     self.stream.stream.enable_similar_image_filter = self.enable_similar_image_filter
+                # if hasattr(self.stream.stream, 'similar_image_filter_threshold') and hasattr(self, 'similar_image_filter_threshold'):
+                #     self.stream.stream.similar_image_filter_threshold = self.similar_image_filter_threshold
+                # if hasattr(self.stream.stream, 'similar_image_filter_max_skip_frame') and hasattr(self, 'similar_image_filter_max_skip_frame'):
+                #     self.stream.stream.similar_image_filter_max_skip_frame = self.similar_image_filter_max_skip_frame
 
             print(f"생성기 준비 완료")
         except Exception as e:
@@ -671,8 +730,9 @@ class Pipeline:
             self._idle_noise_b = self._idle_rng.random(shape, dtype=np.float32)
             self._idle_noise_mix = 0.0
             self._idle_last_frame = None
+            self._idle_wave_grid = None
 
-        speed = float(getattr(self, "_idle_noise_speed", 0.075))
+        speed = float(getattr(self, "_idle_noise_speed", 0.12))
         self._idle_noise_mix += speed
         while self._idle_noise_mix >= 1.0:
             self._idle_noise_a = self._idle_noise_b
@@ -682,7 +742,25 @@ class Pipeline:
         mix = float(np.clip(self._idle_noise_mix, 0.0, 1.0))
         noise = (1.0 - mix) * self._idle_noise_a + mix * self._idle_noise_b
 
-        shift_strength = float(getattr(self, "_idle_shift_strength", 0.45))
+        wave_strength = float(getattr(self, "_idle_wave_strength", 0.0))
+        if wave_strength > 0.0:
+            grid = getattr(self, "_idle_wave_grid", None)
+            if grid is None or len(grid) != 2 or grid[0].shape != (height, width):
+                yy, xx = np.mgrid[0:height, 0:width]
+                grid = (yy.astype(np.float32), xx.astype(np.float32))
+                self._idle_wave_grid = grid
+            base_y, base_x = grid
+            wave_scale = float(max(getattr(self, "_idle_wave_scale", 110.0), 1.0))
+            wave_speed = float(getattr(self, "_idle_wave_speed", 0.35))
+            phase = float(getattr(self, "_idle_wave_phase", 0.0) + wave_speed)
+            self._idle_wave_phase = phase
+            offset_x = np.sin((base_y / wave_scale) + phase) * wave_strength
+            offset_y = np.cos((base_x / wave_scale) + phase * 1.35) * wave_strength
+            map_x = np.clip(base_x + offset_x, 0.0, max(width - 1.0, 0.0)).astype(np.float32)
+            map_y = np.clip(base_y + offset_y, 0.0, max(height - 1.0, 0.0)).astype(np.float32)
+            noise = cv2.remap(noise, map_x, map_y, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+
+        shift_strength = float(getattr(self, "_idle_shift_strength", 1.05))
         if shift_strength > 0.0:
             shift_x = float(self._idle_rng.normal(0.0, shift_strength))
             shift_y = float(self._idle_rng.normal(0.0, shift_strength))
@@ -691,7 +769,7 @@ class Pipeline:
                 noise = cv2.warpAffine(noise, M, (width, height), flags=cv2.INTER_LINEAR,
                                        borderMode=cv2.BORDER_REFLECT)
 
-        strength = float(getattr(self, "_idle_noise_strength", 0.055))
+        strength = float(getattr(self, "_idle_noise_strength", 0.11))
 
         if base_image is not None:
             base_arr = np.asarray(base_image.convert("RGB"), dtype=np.float32) / 255.0
@@ -702,14 +780,31 @@ class Pipeline:
         if getattr(self, "_idle_base_frame", None) is None or getattr(self, "_idle_base_frame").shape != base_arr.shape:
             self._idle_base_frame = base_arr.copy()
         else:
-            lerp = float(np.clip(getattr(self, "_idle_base_lerp", 0.08), 0.0, 1.0))
+            lerp = float(np.clip(getattr(self, "_idle_base_lerp", 0.12), 0.0, 1.0))
             self._idle_base_frame = self._idle_base_frame * (1.0 - lerp) + base_arr * lerp
 
         base = self._idle_base_frame
 
         frame = base + (noise - 0.5) * strength
 
-        texture_mix = float(np.clip(getattr(self, "_idle_texture_mix", 0.18), 0.0, 1.0))
+        if wave_strength > 0.0:
+            frame_mix = float(np.clip(getattr(self, "_idle_wave_frame_mix", 0.35), 0.0, 1.0))
+            if frame_mix > 0.0:
+                grid = getattr(self, "_idle_wave_grid", None)
+                if grid is None or len(grid) != 2 or grid[0].shape != (height, width):
+                    yy, xx = np.mgrid[0:height, 0:width]
+                    grid = (yy.astype(np.float32), xx.astype(np.float32))
+                    self._idle_wave_grid = grid
+                base_y, base_x = grid
+                wave_scale = float(max(getattr(self, "_idle_wave_scale", 110.0), 1.0))
+                phase = float(getattr(self, "_idle_wave_phase", 0.0))
+                offset_x = np.sin((base_y / wave_scale) + phase) * wave_strength * frame_mix
+                offset_y = np.cos((base_x / wave_scale) + phase * 1.35) * wave_strength * frame_mix
+                map_x_frame = np.clip(base_x + offset_x, 0.0, max(width - 1.0, 0.0)).astype(np.float32)
+                map_y_frame = np.clip(base_y + offset_y, 0.0, max(height - 1.0, 0.0)).astype(np.float32)
+                frame = cv2.remap(frame, map_x_frame, map_y_frame, interpolation=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
+
+        texture_mix = float(np.clip(getattr(self, "_idle_texture_mix", 0.16), 0.0, 1.0))
         if texture_mix > 0.0:
             try:
                 blurred = cv2.GaussianBlur(base, (0, 0), 1.2)
@@ -719,11 +814,74 @@ class Pipeline:
             frame = frame * (1.0 - texture_mix) + blurred * texture_mix
 
         if line_mask is not None:
-            mask = np.clip(line_mask.astype(np.float32), 0.0, 1.0)
-            mask = 1.0 - mask[..., None]
-            frame = frame * mask + base * (1.0 - mask)
+            # mask = np.clip(line_mask.astype(np.float32), 0.0, 1.0)
+            # mask = 1.0 - mask[..., None]
+            # frame = frame * mask + base * (1.0 - mask)
 
-        flicker = float(getattr(self, "_idle_flicker_strength", 0.012))
+            mask_base = np.clip(line_mask.astype(np.float32), 0.0, 1.0)
+
+            soften = float(np.clip(getattr(self, "_idle_line_soft", 0.85), 0.0, 5.0))
+            if soften > 1e-4:
+                try:
+                    mask_base = cv2.GaussianBlur(mask_base, (0, 0), soften)
+                except Exception:
+                    from scipy import ndimage
+                    mask_base = ndimage.gaussian_filter(mask_base, sigma=soften)
+
+            expand = float(np.clip(getattr(self, "_idle_line_expand", 1.65), 0.0, 8.0))
+            if expand > 1e-4:
+                try:
+                    mask_wide = cv2.GaussianBlur(mask_base, (0, 0), expand)
+                except Exception:
+                    from scipy import ndimage
+                    mask_wide = ndimage.gaussian_filter(mask_base, sigma=expand)
+            else:
+                mask_wide = mask_base.copy()
+
+            mask_wide = np.clip(mask_wide, 0.0, 1.0)
+            mask = mask_wide[..., None]
+            inv = 1.0 - mask
+
+
+            line_mix = float(np.clip(getattr(self, "_idle_line_mix", 0.32), 0.0, 1.0))
+            if line_mix <= 0.0:
+                line_frame = base
+            else:
+                line_frame = frame
+                extra = float(getattr(self, "_idle_line_noise", 0.045))
+                if extra > 0.0:
+                    jitter = self._idle_rng.normal(0.0, extra, size=line_frame.shape).astype(np.float32)
+                    line_frame = np.clip(line_frame + jitter, 0.0, 1.0)
+                line_frame = base * (1.0 - line_mix) + line_frame * line_mix
+
+                pulse = float(getattr(self, "_idle_line_pulse", 0.06))
+                if pulse > 0.0:
+                    phase = float(getattr(self, "_idle_line_phase", 0.0))
+                    speed = float(getattr(self, "_idle_line_pulse_speed", 0.32))
+                    phase = (phase + speed) % (np.pi * 2.0)
+                    self._idle_line_phase = phase
+
+                    freq = float(max(getattr(self, "_idle_line_pulse_freq", 15.0), 0.1))
+                    noise_scale = float(max(getattr(self, "_idle_line_pulse_noise", 0.85), 0.0))
+
+                    cache = getattr(self, "_idle_line_pulse_cache", None)
+                    if cache is None or cache.shape != mask_base.shape:
+                        cache = self._idle_rng.standard_normal(mask_base.shape).astype(np.float32)
+                    else:
+                        cache = (cache * 0.92 +
+                                 self._idle_rng.standard_normal(cache.shape).astype(np.float32) * 0.08)
+                    self._idle_line_pulse_cache = cache
+
+                    phase_noise = cache * noise_scale
+                    band = np.clip(mask_base, 0.0, 1.0)
+                    pulse_map = np.sin(phase + band * freq + phase_noise)
+                    pulse_map = (pulse_map[..., None] * mask)
+                    line_frame = np.clip(line_frame + pulse_map * pulse, 0.0, 1.0)
+
+            frame = frame * inv + line_frame * mask
+
+        flicker = float(getattr(self, "_idle_flicker_strength", 0.028))
+
         if flicker > 0.0:
             tint = self._idle_rng.normal(0.0, flicker, size=(1, 1, 3)).astype(np.float32)
             frame += tint
@@ -731,7 +889,7 @@ class Pipeline:
         frame = np.clip(frame, 0.0, 1.0)
 
         prev = getattr(self, "_idle_last_frame", None)
-        smooth = float(np.clip(getattr(self, "_idle_temporal_smooth", 0.82), 0.0, 0.999))
+        smooth = float(np.clip(getattr(self, "_idle_temporal_smooth", 0.74), 0.0, 0.999))
         if prev is not None and isinstance(prev, np.ndarray) and prev.shape == frame.shape:
             frame = prev * smooth + frame * (1.0 - smooth)
 
@@ -810,6 +968,26 @@ class Pipeline:
             line_mask = self._extract_line_mask(input_image, blur_px=self._mask_blur_px)
             line_coverage = float(np.clip(line_mask.mean(), 0.0, 1.0))
             drawn_px = int((line_mask > 0.25).sum())
+
+            prev_mask = getattr(self, "_idle_prev_line_mask", None)
+            if prev_mask is None or prev_mask.shape != line_mask.shape:
+                mask_change = 1.0
+                changed_pixels = int(line_mask.size)
+            else:
+                diff = np.abs(line_mask - prev_mask)
+                mask_change = float(diff.mean())
+                changed_pixels = int((diff > 0.02).sum())
+            self._idle_prev_line_mask = line_mask.copy()
+
+            activity_eps = float(getattr(self, "_idle_activity_eps", 0.0005))
+            activity_px = int(getattr(self, "_idle_activity_px", 24))
+            prev_drawn_px = int(getattr(self, "_prev_drawn_px", 0))
+            stroke_growth = drawn_px - prev_drawn_px
+            if mask_change > activity_eps or changed_pixels > activity_px or stroke_growth >= self._rearm_eps:
+                self._idle_inactive_frames = 0
+            else:
+                self._idle_inactive_frames += 1
+
 
             # --- 라인 구조 기반 d_struct (선만 있어도 디테일↑) ---
             d_struct = self._structure_score_from_lines(line_mask)
@@ -899,6 +1077,7 @@ class Pipeline:
                 self._prev_drawn_px = drawn_px
                 reveal_frames = max(1, getattr(self, "_ghost_reveal_frames", 24))
                 self._ghost_reveal = min(1.0, self._ghost_reveal + (1.0 / reveal_frames))
+                self._idle_inactive_frames = max(self._idle_inactive_frames, getattr(self, "_idle_activation_frames", 6))
                 return self._render_idle_frame(gen_pil, line_mask, input_image.size)
 
             
@@ -907,12 +1086,16 @@ class Pipeline:
                 if (drawn_px - self._prev_drawn_px) >= self._rearm_eps:
                     # 새로 그리기 시작했다고 판단 → 처음엔 고스트 안 보이게
                     self._ghost_reveal = 0.0
+                    self._idle_inactive_frames = 0
                 self._prev_drawn_px = drawn_px
                 self._idle_last_frame = None
                 self._idle_base_frame = None
             else:
                 # 거의 백지면 점차 원래 상태로(리셋)
                 self._ghost_reveal = min(1.0, self._ghost_reveal + (1.0 / max(1, self._ghost_reveal_frames)))
+                idle_frames = int(max(1, getattr(self, "_idle_activation_frames", 6)))
+                self._idle_inactive_frames = min(self._idle_inactive_frames + 1, idle_frames)
+
 
             # 1) 예측 결과 채택
             pred_pil = gen_pil.convert("RGB")
@@ -937,6 +1120,18 @@ class Pipeline:
             # 6) (선택) 배경 노이즈 적용: 잔상 질감 통일
             out_pil = Image.fromarray(out_rgb, "RGB")
             out_pil = self._apply_background_noise(out_pil, line_mask)
+
+            idle_frames = int(max(1, getattr(self, "_idle_activation_frames", 6)))
+            if self._idle_inactive_frames >= idle_frames:
+                idle_frame = self._render_idle_frame(out_pil, None, input_image.size)
+                mix = float(np.clip(getattr(self, "_idle_active_mix", 0.85), 0.0, 1.0))
+                if mix >= 0.999:
+                    out_pil = idle_frame
+                else:
+                    idle_np = np.asarray(idle_frame, dtype=np.float32) / 255.0
+                    base_np = np.asarray(out_pil, dtype=np.float32) / 255.0
+                    blended = idle_np * mix + base_np * (1.0 - mix)
+                    out_pil = Image.fromarray(np.clip(blended * 255.0, 0.0, 255.0).astype(np.uint8), "RGB")
 
             return out_pil
 
