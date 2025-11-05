@@ -250,6 +250,18 @@ class Pipeline:
         self._bg_noise_sigma  = 0.1       # 가우시안 블러 정도(0.6~1.2)
         self._bg_noise_seed   = 12345     # 프레임마다 랜덤으로 바꾸고 싶으면 None로 두고 np.random.seed() 제거
         self._bg_noise_mask_soft = 0.4    # 선 주변부에 노이즈가 너무 끼지 않도록 가장자리 소프트닝(0.4~0.8)
+        self._bg_noise_focus_expand = 2.2  # 선 주변으로 노이즈 영향 범위를 확장(σ)
+        self._bg_noise_focus_decay = 0.985  # 입력이 없을 때 마스크가 서서히 줄어드는 비율
+        self._bg_noise_temporal_smooth = 0.82  # 프레임 간 노이즈 부드럽게 전이
+        seed_val = None
+        try:
+            seed_val = int(self._bg_noise_seed) if self._bg_noise_seed is not None else None
+        except (TypeError, ValueError):
+            seed_val = None
+        self._bg_noise_rng_seed = self._bg_noise_seed if seed_val is not None else None
+        self._bg_noise_rng = np.random.default_rng(seed_val)
+        self._bg_noise_last_frame = None
+        self._bg_noise_last_mask = None
 
         # --- 구조(라인) 기반 디테일 램프 ---  # PATCH
         self._struct_dilate_px       = 2      # 얇은 선 보정(1~5)
@@ -661,57 +673,126 @@ class Pipeline:
         예측 결과(gen_pil)에 배경 그레인(노이즈)을 얹되,
         - 고스트 리빌(t)이 진행될수록 노이즈를 급감(처음엔 숨기기, 후반엔 거의 제거)
         - 선 주변은 소프트 마스킹으로 최소화
+         선 주변(실제 그려진 영역)에 집중적으로 적용해서 배경 깜빡임 방지
+        - 그리기 중단 시에도 직전 결과를 기준으로 미세 변화 유지
         """
         if not getattr(self, "_bg_noise_enable", True):
+            self._bg_noise_last_frame = None
             return gen_pil
 
         # 현재 고스트 리빌 상태(0=숨김, 1=완전 노출)
         t = float(getattr(self, "_ghost_reveal", 1.0))
         # 거의 다 드러났으면 노이즈 생략
         if t >= 0.8:
+            self._bg_noise_last_frame = None
             return gen_pil
 
         # 기본 세기 -> (1 - t)^2 로 급격 감쇠 (처음엔 크고, 빨리 줄어듦)
         base_level = float(getattr(self, "_bg_noise_level", 0.12))
         effective_level = base_level * (1.0 - t) * (1.0 - t)
         if effective_level <= 1e-4:
+            self._bg_noise_last_frame = None
             return gen_pil
 
         g = np.asarray(gen_pil.convert("RGB"), np.float32) / 255.0
         H, W, _ = g.shape
 
-        # 재현성 유지용 시드(프레임별 변화를 주고 싶으면 None로 두고 seed 설정 제거)
-        if getattr(self, "_bg_noise_seed", 12345) is not None:
-            np.random.seed(int(self._bg_noise_seed))
+        # # 재현성 유지용 시드(프레임별 변화를 주고 싶으면 None로 두고 seed 설정 제거)
+        # if getattr(self, "_bg_noise_seed", 12345) is not None:
+        #     np.random.seed(int(self._bg_noise_seed))
+
+        mask_focus = None
+        if isinstance(line_mask, np.ndarray):
+            mask_focus = np.clip(line_mask.astype(np.float32), 0.0, 1.0)
+            if mask_focus.max() > 1e-4:
+                expand = float(np.clip(getattr(self, "_bg_noise_focus_expand", 2.2), 0.0, 12.0))
+                if expand > 1e-4:
+                    try:
+                        mask_focus = cv2.GaussianBlur(mask_focus, (0, 0), expand)
+                    except Exception:
+                        from scipy import ndimage
+                        mask_focus = ndimage.gaussian_filter(mask_focus, sigma=expand)
+        if mask_focus is None or mask_focus.size == 0:
+            mask_focus = None
+
+        if mask_focus is None:
+            prev_mask = getattr(self, "_bg_noise_last_mask", None)
+            if isinstance(prev_mask, np.ndarray) and prev_mask.shape == (H, W):
+                decay = float(np.clip(getattr(self, "_bg_noise_focus_decay", 0.985), 0.0, 1.0))
+                mask_focus = prev_mask * decay
+            else:
+                mask_focus = np.zeros((H, W), dtype=np.float32)
 
         # 기본 화이트 노이즈 → 살짝 블러(필름 그레인 질감)
-        n = np.random.randn(H, W, 3).astype(np.float32)
-        sigma = float(getattr(self, "_bg_noise_sigma", 0.8))
-        try:
-            n = cv2.GaussianBlur(n, (0, 0), sigma)
-        except Exception:
-            from scipy import ndimage
-            n = ndimage.gaussian_filter(n, sigma=sigma)
+        # n = np.random.randn(H, W, 3).astype(np.float32)
+        # sigma = float(getattr(self, "_bg_noise_sigma", 0.8))
+        # try:
+        #     n = cv2.GaussianBlur(n, (0, 0), sigma)
+        # except Exception:
+        #     from scipy import ndimage
+        #     n = ndimage.gaussian_filter(n, sigma=sigma)
+
+        soften = float(np.clip(getattr(self, "_bg_noise_mask_soft", 0.8), 0.0, 12.0))
+        if soften > 1e-4:
+            try:
+                mask_focus = cv2.GaussianBlur(mask_focus, (0, 0), soften)
+            except Exception:
+                from scipy import ndimage
+                mask_focus = ndimage.gaussian_filter(mask_focus, sigma=soften)
+
+        mask_focus = np.clip(mask_focus, 0.0, 1.0)
+        if mask_focus.max() <= 1e-5:
+            self._bg_noise_last_mask = mask_focus
+            self._bg_noise_last_frame = None
+            return gen_pil
+
 
         # [0,1] 정규화
-        n = (n - n.min()) / max(1e-6, (n.max() - n.min()))
+        # n = (n - n.min()) / max(1e-6, (n.max() - n.min()))
+        self._bg_noise_last_mask = mask_focus
 
         # 선(=1) 주변을 부드럽게 제외
-        m = np.clip(line_mask.astype(np.float32), 0.0, 1.0)  # 선 = 1
-        inv = 1.0 - m                                        # 배경 = 1
+        # m = np.clip(line_mask.astype(np.float32), 0.0, 1.0)  # 선 = 1
+        # inv = 1.0 - m                                        # 배경 = 1
+        seed_attr = getattr(self, "_bg_noise_seed", None)
+        rng_seed = getattr(self, "_bg_noise_rng_seed", None)
+        rng = getattr(self, "_bg_noise_rng", None)
+        if rng is None or seed_attr != rng_seed:
+            try:
+                seed_val = int(seed_attr) if seed_attr is not None else None
+            except (TypeError, ValueError):
+                seed_val = None
+            rng = np.random.default_rng(seed_val)
+            self._bg_noise_rng = rng
+            self._bg_noise_rng_seed = seed_attr if seed_val is not None else None
 
         # 소프트닝(경계에서 노이즈가 거칠게 보이는 것 완화)
-        soft = float(getattr(self, "_bg_noise_mask_soft", 0.8))  # 0.4~1.2 권장
+        # soft = float(getattr(self, "_bg_noise_mask_soft", 0.8))  # 0.4~1.2 권장
+        noise = rng.standard_normal((H, W, 3)).astype(np.float32)
+        sigma = float(getattr(self, "_bg_noise_sigma", 0.8))
         try:
-            inv_soft = cv2.GaussianBlur(inv, (0, 0), soft)
+            #inv_soft = cv2.GaussianBlur(inv, (0, 0), soft)
+            noise = cv2.GaussianBlur(noise, (0, 0), sigma)
         except Exception:
             from scipy import ndimage
-            inv_soft = ndimage.gaussian_filter(inv, sigma=soft)
+            #inv_soft = ndimage.gaussian_filter(inv, sigma=soft)
+            noise = ndimage.gaussian_filter(noise, sigma=sigma)
+
+        prev_noise = getattr(self, "_bg_noise_last_frame", None)
+        smooth = float(np.clip(getattr(self, "_bg_noise_temporal_smooth", 0.82), 0.0, 0.999))
+        if isinstance(prev_noise, np.ndarray) and prev_noise.shape == noise.shape:
+            noise = prev_noise * smooth + noise * (1.0 - smooth)
+        self._bg_noise_last_frame = noise
 
         # 3채널 가중치
-        w3 = (effective_level * np.clip(inv_soft, 0.0, 1.0))[..., None]
+        #w3 = (effective_level * np.clip(inv_soft, 0.0, 1.0))[..., None]
+        noise -= noise.mean(axis=(0, 1), keepdims=True)
+        std = noise.std(axis=(0, 1), keepdims=True)
+        noise = noise / np.maximum(std, 1e-6)
 
-        out = g * (1.0 - w3) + n * w3
+        #out = g * (1.0 - w3) + n * w3
+        weight = (effective_level * mask_focus)[..., None]
+        out = g + noise * weight
         out = np.clip(out, 0.0, 1.0)
         return Image.fromarray((out * 255.0).astype(np.uint8), "RGB")
 
@@ -813,6 +894,7 @@ class Pipeline:
                 blurred = ndimage.gaussian_filter(base, sigma=1.2)
             frame = frame * (1.0 - texture_mix) + blurred * texture_mix
 
+        mask_focus = None
         if line_mask is not None:
             # mask = np.clip(line_mask.astype(np.float32), 0.0, 1.0)
             # mask = 1.0 - mask[..., None]
@@ -842,6 +924,8 @@ class Pipeline:
             mask = mask_wide[..., None]
             inv = 1.0 - mask
 
+            mask_focus = mask_wide[..., None]
+            inv = 1.0 - mask_focus
 
             line_mix = float(np.clip(getattr(self, "_idle_line_mix", 0.32), 0.0, 1.0))
             if line_mix <= 0.0:
@@ -875,16 +959,20 @@ class Pipeline:
                     phase_noise = cache * noise_scale
                     band = np.clip(mask_base, 0.0, 1.0)
                     pulse_map = np.sin(phase + band * freq + phase_noise)
-                    pulse_map = (pulse_map[..., None] * mask)
+                    pulse_map = (pulse_map[..., None] * mask_focus)
                     line_frame = np.clip(line_frame + pulse_map * pulse, 0.0, 1.0)
 
-            frame = frame * inv + line_frame * mask
+            frame = base * inv + line_frame * mask_focus
 
         flicker = float(getattr(self, "_idle_flicker_strength", 0.028))
 
         if flicker > 0.0:
             tint = self._idle_rng.normal(0.0, flicker, size=(1, 1, 3)).astype(np.float32)
-            frame += tint
+            #frame += tint
+            if mask_focus is not None:
+                frame += tint * mask_focus
+            else:
+                frame += tint
 
         frame = np.clip(frame, 0.0, 1.0)
 
@@ -1123,7 +1211,7 @@ class Pipeline:
 
             idle_frames = int(max(1, getattr(self, "_idle_activation_frames", 6)))
             if self._idle_inactive_frames >= idle_frames:
-                idle_frame = self._render_idle_frame(out_pil, None, input_image.size)
+                idle_frame = self._render_idle_frame(out_pil, line_mask, input_image.size)
                 mix = float(np.clip(getattr(self, "_idle_active_mix", 0.85), 0.0, 1.0))
                 if mix >= 0.999:
                     out_pil = idle_frame
