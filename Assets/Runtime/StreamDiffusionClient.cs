@@ -333,7 +333,6 @@ public class StreamDiffusionClient : MonoBehaviour
                     }
                     catch (System.IO.IOException ioEx)
                     {
-                        Debug.LogWarning($"IO异常: {ioEx.Message}，尝试继续接收...");
                         Thread.Sleep(100);
                     }
                 }
@@ -344,12 +343,10 @@ public class StreamDiffusionClient : MonoBehaviour
             }
         }
         catch (System.Exception e)
-        {
-            Debug.LogError($"接收消息时出错: {e.Message}");
+        {      
 
             if (_isRunning && !_restartRequested)
             {
-                Debug.Log("尝试重新连接服务器...");
                 TryReconnect();
             }
         }
@@ -390,7 +387,6 @@ public class StreamDiffusionClient : MonoBehaviour
 
             if (validEnd)
             {
-                Debug.Log($"接收到完整图像数据，大小: {_advancedData.Length} 字节");
                 if (_resultTexture == null)
                 {
                     _resultTexture = new Texture2D(2, 2, TextureFormat.RGBA32, false,
@@ -400,7 +396,7 @@ public class StreamDiffusionClient : MonoBehaviour
                         _resultMaterial.mainTexture = _resultTexture;
                         _resultMaterial.SetColor("_BGColor", new Color(0.12f, 0.12f, 0.12f, 1f));
                         _resultMaterial.SetFloat("_MatteStrength", 1.0f);
-                        Debug.Log("将新纹理分配给材质");
+                        
                     }
                     else
                         Debug.LogError("结果材质为空，无法分配纹理");
@@ -411,7 +407,7 @@ public class StreamDiffusionClient : MonoBehaviour
                     string dataPrefix = "";
                     for (int i = 0; i < System.Math.Min(20, _advancedData.Length); i++)
                     { dataPrefix += _advancedData[i].ToString("X2") + " "; }
-                    Debug.Log($"图像数据前缀: {dataPrefix}");
+                   
 
                     bool isPng = (_advancedData.Length > 8 &&
                         _advancedData[0] == 0x89 && _advancedData[1] == 0x50 &&
@@ -422,7 +418,7 @@ public class StreamDiffusionClient : MonoBehaviour
                         _advancedData[2] == 0xFF);
 
                     bool success = _resultTexture.LoadImage(_advancedData, !isPng);
-                    Debug.Log($"加载图像{(success ? "成功" : "失败")}，宽度={_resultTexture.width}, 高度={_resultTexture.height}");
+                   
 
                     if (success)
                     {
@@ -448,7 +444,7 @@ public class StreamDiffusionClient : MonoBehaviour
                                 double sR = 0, sG = 0, sB = 0;
                                 foreach (var c in px) { sR += c.r; sG += c.g; sB += c.b; }
                                 double n = px.Length * 255.0;
-                                Debug.Log($"[DEBUG] 평균 RGB: R={(sR / n):F3}, G={(sG / n):F3}, B={(sB / n):F3}");
+                                
                             }
                         }
                         catch { }
@@ -728,7 +724,7 @@ public class StreamDiffusionClient : MonoBehaviour
             if (pixels.Length > 0)
             {
                 avgR /= pixels.Length; avgG /= pixels.Length; avgB /= pixels.Length;
-                Debug.Log($"원본 이미지 평균 RGB값: R={avgR:F2}, G={avgG:F2}, B={avgB:F2}");
+                //Debug.Log($"원본 이미지 평균 RGB값: R={avgR:F2}, G={avgG:F2}, B={avgB:F2}");
             }
 
             byte[] imageBytes = ImageConversion.EncodeToPNG(processTexture);
@@ -745,7 +741,7 @@ public class StreamDiffusionClient : MonoBehaviour
             }
 
             string base64Image = System.Convert.ToBase64String(imageBytes);
-            Debug.Log($"PNG 인코딩 사용, 크기: {imageBytes.Length} 바이트, Base64 길이: {base64Image.Length}");
+            //Debug.Log($"PNG 인코딩 사용, 크기: {imageBytes.Length} 바이트, Base64 길이: {base64Image.Length}");
 
             string promptForWire = prompt;
             string promptB64 = System.Convert.ToBase64String(Encoding.UTF8.GetBytes(promptForWire));
@@ -767,7 +763,7 @@ public class StreamDiffusionClient : MonoBehaviour
                 $"||image_base64||{base64Image}" +
                 $"||run||0|end|";
 
-            Debug.Log($"전송할 프롬프트: '{prompt}'");
+            //Debug.Log($"전송할 프롬프트: '{prompt}'");
 
             // 큰 메시지는 청크 전송
             byte[] commandBytes = Encoding.UTF8.GetBytes(command);
@@ -869,7 +865,7 @@ public class StreamDiffusionClient : MonoBehaviour
         Invoke("StartTcpClient", 8.0f);
 
         _restartRequested = false;
-        Debug.Log("StreamDiffusion服务重启请求已처리");
+ 
     }
 
     private void StartPythonProcess()
@@ -879,7 +875,6 @@ public class StreamDiffusionClient : MonoBehaviour
 
         if (System.IO.File.Exists(exePath))
         {
-            Debug.Log("启动背景服务器...");
             System.Diagnostics.ProcessStartInfo startInfo = new System.Diagnostics.ProcessStartInfo(exePath);
             startInfo.FileName = exePath;
             startInfo.Arguments = "image_predictor.py";
@@ -1022,7 +1017,7 @@ public class StreamDiffusionClient : MonoBehaviour
             tex.Apply();
 
             string promptToUse = string.IsNullOrEmpty(_defaultPrompt) ? "beautiful artwork" : _defaultPrompt;
-            Debug.Log($"InputImage에서 사용할 프롬프트: {promptToUse}");
+            //Debug.Log($"InputImage에서 사용할 프롬프트: {promptToUse}");
 
             if (_useDynamicSystem)
             {
