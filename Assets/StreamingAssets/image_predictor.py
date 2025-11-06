@@ -131,10 +131,8 @@ def analyze_image_pattern(image_array):
     # 큰 컴포넌트의 비율 계산
     if num_components > 0:
         component_sizes = stats[1:, cv2.CC_STAT_AREA]
-        large_components = np.sum(component_sizes > 500)
         max_component_size = np.max(component_sizes) if len(component_sizes) > 0 else 0
     else:
-        large_components = 0
         max_component_size = 0
     
     # 4. 그려진 픽셀의 밀도
@@ -142,9 +140,9 @@ def analyze_image_pattern(image_array):
     drawing_density = drawn_pixels / gray.size
     
     # 5. 선의 연속성 측정 (스켈레톤 분석)
-    if drawn_pixels > 50:
+    if drawn_pixels > 100:
         # 이진화
-        _, binary = cv2.threshold(gray, 250, 255, cv2.THRESH_BINARY_INV)
+        _, binary = cv2.threshold(gray, 120, 255, cv2.THRESH_BINARY_INV)
         # 스켈레톤 추출 (선의 중심선)
         skeleton = cv2.ximgproc.thinning(binary) if hasattr(cv2, 'ximgproc') else binary
         skeleton_pixels = np.sum(skeleton > 0)
