@@ -3,7 +3,6 @@ using System.Collections;
 using UnityEngine;
 using UnityEngine.UI;
 using TMPro;
-using FreeDraw;
 
 /// <summary>
 /// TestStreamUI (NDI 입력 전용)
@@ -55,16 +54,6 @@ public class TestStreamUI : MonoBehaviour
     // 마지막으로 캡처해 보낸 Texture2D (디버그/검사용)
     private Texture2D _lastSentTex2D;
 
-    [Header("Sketch Responsiveness")]
-    [Tooltip("FreeDraw Drawable reference so we can detect when the user is sketching.")]
-    public Drawable _sketchCanvas;
-
-    [Tooltip("When enabled, captured frames are sent more frequently while sketching to minimize the delay before strokes show up in the prediction.")]
-    public bool _prioritizeSketchLatency = true;
-
-    [Tooltip("Minimum interval (seconds) between frame sends while sketching. Lower values reduce latency but increase GPU/CPU load.")]
-    [Range(0.01f, 0.3f)] public float _sketchGenerationInterval = 0.05f;
-
     [Header("Idle Noise Generation")]
     [Tooltip("입력이 멈췄을 때도 미세한 노이즈를 섞어 지속적으로 변화하는 느낌을 줍니다.")]
     public bool _enableIdleNoise = true;
@@ -102,9 +91,6 @@ public class TestStreamUI : MonoBehaviour
     private System.Random _idleNoiseRandom = new System.Random();
     private float _lastActivityTime;
     private bool _idleNoiseActive;
-    private float _lastSketchSendTime = float.NegativeInfinity;
-    private bool _wasSketching;
-
 
     // ─────────────────────────────────────────────────────────────────────────────
     // Unity lifecycle
@@ -115,11 +101,6 @@ public class TestStreamUI : MonoBehaviour
             _originalInputTexture = _inputMaterial.mainTexture;
 
         _lastActivityTime = Time.time;
-
-        if (_sketchCanvas == null)
-        {
-            _sketchCanvas = FindObjectOfType<Drawable>();
-        }
     }
 
     private void OnEnable()
@@ -185,8 +166,6 @@ public class TestStreamUI : MonoBehaviour
             var generating = _stream.isGenerating();
             _statusText.text = $"Running: {running} | Generating: {generating} | Mode: {(_continuousGeneration ? "CONT" : "ONCE")}";
         }
-
-        HandleSketchLatency();
 
     }
 
@@ -427,48 +406,6 @@ public class TestStreamUI : MonoBehaviour
         }
 
         _stream.AdvancePipeline(textureToSend, prompt);
-    }
-
-    private void HandleSketchLatency()
-    {
-        if (!_prioritizeSketchLatency)
-            return;
-
-        if (_sketchCanvas == null)
-            return;
-
-        bool isSketching = _sketchCanvas.IsDrawing;
-
-        if (!isSketching)
-        {
-            _wasSketching = false;
-            _lastSketchSendTime = float.NegativeInfinity;
-            return;
-        }
-
-        if (!_continuousGeneration)
-        {
-            _wasSketching = true;
-            return;
-        }
-
-        if (_stream == null || !_stream.isRunning() || _stream.isGenerating())
-            return;
-
-        float interval = Mathf.Min(_generationInterval, Mathf.Clamp(_sketchGenerationInterval, 0.01f, 0.3f));
-
-        if (!_wasSketching)
-        {
-            _lastSketchSendTime = float.NegativeInfinity;
-        }
-
-        if (Time.time - _lastSketchSendTime >= interval)
-        {
-            UpdateStreamDiff();
-            _lastSketchSendTime = Time.time;
-        }
-
-        _wasSketching = true;
     }
 
     private bool EvaluateFrameChange(Color32[] currentPixels, out float diffRatio)
