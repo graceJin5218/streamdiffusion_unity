@@ -69,8 +69,8 @@ taesd_model = found_vae_path
 lora_model = found_lora_path
 lora_model2 = found_lora_path2
 pipeline_object = None
-default_strength = 9.0
-default_lora_scale = 0.85
+default_strength = 5.0
+default_lora_scale = 0.35
 default_lora_scale2 = 0.5
 bypass_mode = False
 is_linear_space = False
@@ -233,7 +233,7 @@ class Pipeline:
         self._detail_steps_min = 10     # 초반 스텝
         self._detail_steps_max = 24     # 후반 스텝 (LCM이면 16~24 권장)
 
-        self._detail_guid_min  = 0.6    # 초반 guidance (LCM은 1~3대가 자연스러움)
+        self._detail_guid_min  = 1.0    # 초반 guidance (LCM은 1~3대가 자연스러움)
         self._detail_guid_max  = 1.2    # 후반 guidance
 
 
@@ -244,14 +244,15 @@ class Pipeline:
 
         # __init__ 끝부분(기존 params 인근)에 추가  # PATCH: background grain
         self._bg_noise_enable = True      # 배경 노이즈 항상 유지
-        self._bg_noise_level  = 0.03      # 0.08~0.15 권장 (값↑ = 노이즈↑)
-        self._bg_noise_sigma  = 0.1       # 가우시안 블러 정도(0.6~1.2)
+        self._bg_noise_level  = 0.15      # 0.08~0.15 권장 (값↑ = 노이즈↑)
+        self._bg_noise_min_ratio = 0.35   # 고스트 리빌 진행 중에도 유지할 최소 노이즈 비율(0~1)
+        self._bg_noise_sigma  = 0.6       # 가우시안 블러 정도(0.6~1.2)
         self._bg_noise_seed   = 12345     # 프레임마다 랜덤으로 바꾸고 싶으면 None로 두고 np.random.seed() 제거
         self._bg_noise_mask_soft = 0.4    # 선 주변부에 노이즈가 너무 끼지 않도록 가장자리 소프트닝(0.4~0.8)
 
         # --- 구조(라인) 기반 디테일 램프 ---  # PATCH
         self._struct_dilate_px       = 2      # 얇은 선 보정(1~5)
-        self._struct_cov_full        = 0.0008  # 이 정도 구조면 충분하다고 간주
+        self._struct_cov_full        = 0.08  # 이 정도 구조면 충분하다고 간주
         self._detail_curve_pow_line  = 0.9    # 라인 램프 곡률(초반 민감도)
 
         # 창의성 램프 관련 (추가)
@@ -268,10 +269,10 @@ class Pipeline:
 
 
         # === Ghost(잔상) 점진 노출 파라미터 & 상태 ===
-        self._ghost_bg_rgb   = (10, 10, 10)  # 배경 합성 색(어두운 회색 권장)
-        self._ghost_matte_max = 1.0          # 초반: 배경과 많이 섞음(고스트 거의 안 보임)
+        self._ghost_bg_rgb   = (255, 255, 255)  # 배경 합성 색(어두운 회색 권장)
+        self._ghost_matte_max = 1.0          # 초반: 배경과 많이 섞음(고스트 거의 안 보임)  0 : 배경색 어두워짐 1 : 배경색 밝아짐 
         self._ghost_matte_min = 0.2          # 후반: 아직도 약간만 가림(완전 노출 원하면 0.0)
-        self._ghost_reveal_frames = 24       # 몇 프레임에 걸쳐 0→1로 노출할지(0.5~1초에 해당)
+        self._ghost_reveal_frames = 1       # 몇 프레임에 걸쳐 0→1로 노출할지(0.5~1초에 해당)
         self._ghost_reveal = 1.0             # 현재 노출 값(0=숨김, 1=완전 노출)
         self._prev_drawn_px = 0              # 이전 프레임의 선 픽셀 수(변화 감지용)
         self._rearm_eps = 96                 # 선 픽셀 증가가 이 값 이상이면 '새 스트로크'로 간주
@@ -589,15 +590,23 @@ class Pipeline:
         if not getattr(self, "_bg_noise_enable", True):
             return gen_pil
 
-        # 현재 고스트 리빌 상태(0=숨김, 1=완전 노출)
-        t = float(getattr(self, "_ghost_reveal", 1.0))
-        # 거의 다 드러났으면 노이즈 생략
-        if t >= 0.8:
-            return gen_pil
+        # # 현재 고스트 리빌 상태(0=숨김, 1=완전 노출)
+        # t = float(getattr(self, "_ghost_reveal", 1.0))
+        # # 거의 다 드러났으면 노이즈 생략
+        # if t >= 0.8:
+        #     return gen_pil
+
+        t = float(np.clip(getattr(self, "_ghost_reveal", 1.0), 0.0, 1.0))
 
         # 기본 세기 -> (1 - t)^2 로 급격 감쇠 (처음엔 크고, 빨리 줄어듦)
         base_level = float(getattr(self, "_bg_noise_level", 0.12))
-        effective_level = base_level * (1.0 - t) * (1.0 - t)
+        #effective_level = base_level * (1.0 - t) * (1.0 - t)
+        
+        min_ratio = float(np.clip(getattr(self, "_bg_noise_min_ratio", 0.0), 0.0, 1.0))
+
+        # (1 - t)^2 로 기본 감쇠하되, 최소 유지 비율만큼은 항상 남긴다.
+        fade_component = (1.0 - t) * (1.0 - t)
+        effective_level = base_level * (min_ratio + (1.0 - min_ratio) * fade_component)
         if effective_level <= 1e-4:
             return gen_pil
 
@@ -801,7 +810,7 @@ class Pipeline:
 
             
             # 0) 새 스트로크(그림 증가) 감지 시 페이드 리셋
-            if drawn_px >= getattr(self, "_trigger_px", 4):
+            if drawn_px >= getattr(self, "_trigger_px", 100):
                 if (drawn_px - self._prev_drawn_px) >= self._rearm_eps:
                     # 새로 그리기 시작했다고 판단 → 처음엔 고스트 안 보이게
                     self._ghost_reveal = 0.0
@@ -1370,10 +1379,19 @@ def processData(client_socket, data):
                     prompt = ""
             elif key == "neg_prompt":
                 try:
-                    neg_prompt = value.decode('utf-8', errors='replace')
-                except Exception as e:
-                    print(f"Error decoding negative prompt: {e}")
-                    neg_prompt = ""
+                #     neg_prompt = value.decode('utf-8', errors='replace')
+                # except Exception as e:
+                #     print(f"Error decoding negative prompt: {e}")
+                #     neg_prompt = ""
+                    neg_prompt = base64.b64decode(value).decode("utf-8", errors="replace")
+                    if DEBUG:
+                        print(f"Decoded neg_prompt(base64) -> '{neg_prompt[:80]}'")
+                except Exception:
+                    try:
+                        neg_prompt = value.decode('utf-8', errors='replace')
+                    except Exception as e:
+                        print(f"Error decoding negative prompt: {e}")
+                        neg_prompt = ""
             elif key == "base_model":
                 try:
                     base_m = value.decode('utf-8', errors='replace')
@@ -1524,14 +1542,14 @@ def processData(client_socket, data):
                 except Exception as e:
                     print(f"Failed to decode neg_prompt_b64: {e}")
 
-            # 호환성: Unity가 현재 neg_prompt를 base64로 보내지만 키는 'neg_prompt'인 상태
-            elif key == "neg_prompt":
-                try:
-                    # 먼저 base64로 시도
-                    neg_prompt = base64.b64decode(value).decode("utf-8")
-                except Exception:
-                    # base64가 아니면 평문으로 처리
-                    neg_prompt = value.decode("utf-8", errors="replace")
+            # # 호환성: Unity가 현재 neg_prompt를 base64로 보내지만 키는 'neg_prompt'인 상태
+            # elif key == "neg_prompt":
+            #     try:
+            #         # 먼저 base64로 시도
+            #         neg_prompt = base64.b64decode(value).decode("utf-8")
+            #     except Exception:
+            #         # base64가 아니면 평문으로 처리
+            #         neg_prompt = value.decode("utf-8", errors="replace")
 
             else:
                 if DEBUG:

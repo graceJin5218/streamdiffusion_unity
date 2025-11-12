@@ -647,13 +647,15 @@ public class StreamDiffusionClient : MonoBehaviour
                 return;
             }
 
+            prompt = _defaultPrompt;
+
             // 프롬프트 기본값
-            if (string.IsNullOrEmpty(prompt))
+            /*if (string.IsNullOrEmpty(prompt))
             {
                 prompt = _defaultPrompt;
-                Debug.Log($"빈 프롬프트 감지, 기본 프롬프트 사용: {prompt}");
-            }
-
+         
+            }*/
+            
             // 사용할 파라미터
             float currentStrength = strength ?? _strength;
             float currentLoraScale = loraScale ?? _loraScale;

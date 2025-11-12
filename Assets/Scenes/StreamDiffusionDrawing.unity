@@ -2048,42 +2048,39 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   _baseModelPath: dreamshaper_8
   _tinyVaeModelPath: taesd
-  _loraModelPath: princess_V1
+  _loraModelPath: lcm-lora-sdv1-5
   _loraModelPath2: 
   _acceleration: cuda
   _width: 1000
   _height: 750
-  _seed: 2092
+  _seed: 7679
   _useTinyVae: 1
   _useLcmLora: 1
-  _loraScale: 0.804
+  _loraScale: 0.279
   _loraScale2: 0.623
   _brightness: 1
   _contrast: 1
   _saturation: 1
   _showPythonConsole: 1
-  _strength: 0.36
-  _delta: 0.313
+  _strength: 5.53
+  _delta: 0.334
   _doAddNoise: 1
   _enableSimilarFilter: 1
-  _similarThreshold: 0.173
-  _maxSkipFrame: 30
-  _guidanceScale: 0.97
+  _similarThreshold: 0.727
+  _maxSkipFrame: 6
+  _guidanceScale: 1.06
   _bypassMode: 0
-  _defaultPrompt: <lora:AllDisneyPrincessXL:0.8>,  cinematic portrait, 3D CG animation
-    style, disney-princess aesthetic,  soft diffused light, glossy skin, big expressive
-    eyes, pastel color palette,  intricate royal dress, elegant hair styling, delicate
-    highlights, film still, ultra-detailed
-  _defaultNegativePrompt: text, watermark, logo, extra fingers, extra limbs, deformed,
-    lowres, blurry, oversharpen,  bad anatomy, bad hands, asymmetry, messy background,
-    artifacts
+  _defaultPrompt: butterfly with glow body, butterflies in bakground, line, uhd,
+    8k octane render, ethereal, ultra sharp, shadows, cooler colors, glowing eyes,
+    masterpiece, filled with textured
+  _defaultNegativePrompt: text, logo, castle, building, low quality
   _initialStrength: 0.15
   _midStrength: 0.5
   _finalStrength: 0.8
   _detailThreshold1: 0.2
   _detailThreshold2: 0.6
   _useDynamicSystem: 1
-  _strengthSmoothing: 0.2
+  _strengthSmoothing: 0.483
   _resultMaterial: {fileID: 2100000, guid: 943e6c2cac3a6e64dbdb2dad70dbb0d6, type: 2}
   _stylePreset: consistent style, clean lines, soft colors, subtle watercolor, gentle
     lighting
@@ -2117,7 +2114,7 @@ MonoBehaviour:
   _stream: {fileID: 1191806947}
   _autoStart: 0
   _continuousGeneration: 1
-  _generationInterval: 0.51
+  _generationInterval: 0.04
   _ndiRenderTexture: {fileID: 8400000, guid: 96996aa730eb58a47807a773baa7ecbc, type: 2}
   _inputMaterial: {fileID: 0}
   _resizeToModelSize: 1
@@ -2126,6 +2123,16 @@ MonoBehaviour:
   _generateOnceButton: {fileID: 0}
   _startButton: {fileID: 381118695}
   _statusText: {fileID: 0}
+  _enableIdleNoise: 1
+  _idleChangeThreshold: 0
+  _idleGracePeriod: 0.4
+  _idleNoiseStrengthMin: 0.02
+  _idleNoiseStrength: 0.08
+  _idleSampleStep: 4
+  _idleColorTolerance: 12
+  _idleNoiseCoverageMin: 0.15
+  _idleNoiseCoverage: 0.45
+  _idleNoiseRampDuration: 2
 --- !u!1 &1215471198
 GameObject:
   m_ObjectHideFlags: 0
